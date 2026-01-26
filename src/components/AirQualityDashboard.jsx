@@ -4,7 +4,10 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, BarChart, Bar, AreaChart, Area
 } from 'recharts';
+import DatePicker from 'react-datepicker';
+import { format, subDays, startOfDay, endOfDay, isAfter } from 'date-fns';
 import './AirQualityDashboard.css';
+import 'react-datepicker/dist/react-datepicker.css';
 
 const AirQualityDashboard = () => {
   const [dashboardData, setDashboardData] = useState(null);
@@ -21,11 +24,15 @@ const AirQualityDashboard = () => {
   const [timeRange, setTimeRange] = useState('20');
   const [selectedDevicesForComparison, setSelectedDevicesForComparison] = useState(['ESP32A']);
   const [timeInterval, setTimeInterval] = useState('hour');
-
   const mountedRef = useRef(true);
   const unsubscribeRef = useRef(null);
-
   const deviceColors = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088fe', '#00c49f'];
+  const [calibrationTimeRange, setCalibrationTimeRange] = useState('all');
+  // Add new state for date picker
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [startDate, setStartDate] = useState(subDays(new Date(), 7)); // Default: last 7 days
+  const [endDate, setEndDate] = useState(new Date());
+  const [customDateRange, setCustomDateRange] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -541,84 +548,81 @@ const AirQualityDashboard = () => {
     }
   }, [dashboardData]);
 
-  // Update the getCalibrationData function to handle different structures
+  // Update getCalibrationData function to not use subHours
   const getCalibrationData = useCallback(() => {
     if (!dashboardData?.calibration_time) {
-      console.log('❌ No calibration_time found in dashboardData');
       return [];
     }
 
-    console.log('🔍 Checking calibration_time structure...');
     const calibrationEntries = Object.entries(dashboardData.calibration_time);
-    console.log('📊 Total calibration entries:', calibrationEntries.length);
-
     const calibrationData = [];
     const now = new Date();
 
-    // Try different possible structures
-    calibrationEntries.forEach(([timestamp, data], index) => {
-      try {
-        console.log(`🔍 Entry ${index + 1}: ${timestamp}`);
+    // Define time range boundaries based on selection
+    let startTime = 0;
+    let endTime = Infinity;
 
-        // Try different possible structures:
+    if (customDateRange) {
+      // Use custom date range
+      startTime = startOfDay(startDate).getTime();
+      endTime = endOfDay(endDate).getTime();
+    } else {
+      // Use predefined ranges (calculate hours for 1H range)
+      switch (calibrationTimeRange) {
+        case '1h':
+          startTime = now.getTime() - (1 * 60 * 60 * 1000); // 1 hour ago
+          break;
+        case '24h':
+          startTime = now.getTime() - (24 * 60 * 60 * 1000); // 24 hours ago
+          break;
+        case '7d':
+          startTime = now.getTime() - (7 * 24 * 60 * 60 * 1000); // 7 days ago
+          break;
+        case '30d':
+          startTime = now.getTime() - (30 * 24 * 60 * 60 * 1000); // 30 days ago
+          break;
+        case 'all':
+          startTime = 0; // All data
+          break;
+      }
+    }
+
+    calibrationEntries.forEach(([timestamp, data]) => {
+      try {
         let esp32Data = null;
 
-        // Structure 1: timestamp -> ESP32_A -> sensor data
+        // Try different possible structures
         if (data && typeof data === 'object') {
           if (data['ESP32_A']) {
-            console.log(`✅ Found ESP32_A in ${timestamp}`);
             esp32Data = data['ESP32_A'];
-          }
-          // Structure 2: timestamp -> ESP32A (without underscore)
-          else if (data['ESP32A']) {
-            console.log(`✅ Found ESP32A (no underscore) in ${timestamp}`);
+          } else if (data['ESP32A']) {
             esp32Data = data['ESP32A'];
-          }
-          // Structure 3: timestamp -> ESP32 (just ESP32)
-          else if (data['ESP32']) {
-            console.log(`✅ Found ESP32 in ${timestamp}`);
+          } else if (data['ESP32']) {
             esp32Data = data['ESP32'];
-          }
-          // Structure 4: timestamp directly contains sensor data (no device key)
-          else if (data.co2 !== undefined || data.CO2 !== undefined || data.press !== undefined) {
-            console.log(`✅ Found direct sensor data in ${timestamp}`);
+          } else if (data.co2 !== undefined || data.CO2 !== undefined || data.press !== undefined) {
             esp32Data = data;
           } else {
-            console.log(`❓ Unknown structure for ${timestamp}:`, Object.keys(data));
-            // Try to see if there's any nested object
             const keys = Object.keys(data);
             if (keys.length > 0) {
               const firstKey = keys[0];
               if (data[firstKey] && typeof data[firstKey] === 'object') {
-                console.log(`🔍 Found nested object under key "${firstKey}"`);
                 esp32Data = data[firstKey];
               }
             }
           }
         }
 
-        if (!esp32Data) {
-          console.log(`❌ No ESP32 data found in ${timestamp}`);
-          return;
-        }
-
-        console.log(`📊 ESP32 data found for ${timestamp}:`, Object.keys(esp32Data));
+        if (!esp32Data) return;
 
         // Parse the timestamp
         const parts = timestamp.split('_');
-        if (parts.length < 2) {
-          console.log(`❌ Invalid timestamp format: ${timestamp}`);
-          return;
-        }
+        if (parts.length < 2) return;
 
         const [datePart, timePart] = parts;
         const dateParts = datePart.split('-');
         const timeParts = timePart.split('-');
 
-        if (dateParts.length < 3 || timeParts.length < 3) {
-          console.log(`❌ Invalid date/time parts: ${timestamp}`);
-          return;
-        }
+        if (dateParts.length < 3 || timeParts.length < 3) return;
 
         const recordDate = new Date(
           parseInt(dateParts[0]),
@@ -629,11 +633,10 @@ const AirQualityDashboard = () => {
           parseInt(timeParts[2] || 0)
         );
 
-        console.log(`📅 Parsed date: ${recordDate.toString()}`);
+        const recordTime = recordDate.getTime();
 
-        // Include all data, not just last 7 days for now
-        const daysDiff = (now - recordDate) / (1000 * 60 * 60 * 24);
-        console.log(`⏱️ Days difference: ${daysDiff.toFixed(2)}`);
+        // Check if within selected time range
+        if (recordTime < startTime || recordTime > endTime) return;
 
         const formattedTime = recordDate.toLocaleTimeString('en-US', {
           hour: '2-digit',
@@ -641,55 +644,85 @@ const AirQualityDashboard = () => {
           second: '2-digit'
         });
 
-        // Extract data with multiple possible field names
+        // Extract data
         const co2 = parseFloat(esp32Data.co2 || esp32Data.CO2 || 0);
         const press = parseFloat(esp32Data.press || esp32Data.pressure || esp32Data.pres || 0);
-        const pm25 = parseFloat(esp32Data.pm25 || esp32Data.PM25 || 0);
-        const temp = parseFloat(esp32Data.temp || esp32Data.temperature || 0);
-        const hum = parseFloat(esp32Data.hum || esp32Data.humidity || 0);
-        const pm10 = parseFloat(esp32Data.pm10 || esp32Data.PM10 || 0);
-        const ch0 = parseFloat(esp32Data.ch0 || 0);
-        const ch1 = parseFloat(esp32Data.ch1 || 0);
-        const no2 = parseFloat(esp32Data.no2 || 0);
-        const so2 = parseFloat(esp32Data.so2 || 0);
-
-        console.log(`📈 Data values: CO₂=${co2}, Pressure=${press}, Temp=${temp}`);
 
         calibrationData.push({
           timestamp,
           time: formattedTime,
           fullDate: recordDate.toLocaleString(),
           date: recordDate.toLocaleDateString(),
+          datetime: recordDate,
           co2: isNaN(co2) ? 0 : co2,
           pressure: isNaN(press) ? 0 : press,
-          pm25: isNaN(pm25) ? 0 : pm25,
-          temp: isNaN(temp) ? 0 : temp,
-          hum: isNaN(hum) ? 0 : hum,
-          pm10: isNaN(pm10) ? 0 : pm10,
-          ch0: isNaN(ch0) ? 0 : ch0,
-          ch1: isNaN(ch1) ? 0 : ch1,
-          no2: isNaN(no2) ? 0 : no2,
-          so2: isNaN(so2) ? 0 : so2,
-          rawData: esp32Data // Keep raw data for debugging
+          pm25: parseFloat(esp32Data.pm25 || esp32Data.PM25 || 0),
+          temp: parseFloat(esp32Data.temp || esp32Data.temperature || 0),
+          hum: parseFloat(esp32Data.hum || esp32Data.humidity || 0),
+          pm10: parseFloat(esp32Data.pm10 || esp32Data.PM10 || 0),
+          ch0: parseFloat(esp32Data.ch0 || 0),
+          ch1: parseFloat(esp32Data.ch1 || 0),
+          no2: parseFloat(esp32Data.no2 || 0),
+          so2: parseFloat(esp32Data.so2 || 0),
+          rawData: esp32Data
         });
 
       } catch (error) {
-        console.error(`❌ Error processing calibration timestamp ${timestamp}:`, error);
+        console.error(`Error processing calibration timestamp ${timestamp}:`, error);
       }
     });
 
-    console.log(`✅ Total calibration data points found: ${calibrationData.length}`);
+    // Sort by datetime (oldest to newest for graph)
+    return calibrationData.sort((a, b) => a.datetime - b.datetime);
+  }, [dashboardData, calibrationTimeRange, customDateRange, startDate, endDate]);
 
-    if (calibrationData.length > 0) {
-      console.log('📊 Sample calibration data:', calibrationData[0]);
+  // Function to handle preset range selection
+  const handlePresetRange = (range) => {
+    setCalibrationTimeRange(range);
+    setCustomDateRange(false);
+  };
+
+  // Function to handle custom date range selection
+  const handleCustomRange = () => {
+    setCustomDateRange(true);
+    setShowDatePicker(true);
+  };
+
+  // Function to apply custom date range
+  const applyCustomDateRange = () => {
+    if (isAfter(startDate, endDate)) {
+      alert('Start date cannot be after end date');
+      return;
+    }
+    setCustomDateRange(true);
+    setShowDatePicker(false);
+  };
+
+  // Get formatted date range text
+  const getDateRangeText = () => {
+    if (customDateRange) {
+      return `${format(startDate, 'MMM dd, yyyy')} - ${format(endDate, 'MMM dd, yyyy')}`;
     }
 
-    // Sort by timestamp (newest first)
-    return calibrationData.sort((a, b) =>
-      new Date(b.timestamp.replace('_', ' ').replace(/-/g, ':')) -
-      new Date(a.timestamp.replace('_', ' ').replace(/-/g, ':'))
-    );
-  }, [dashboardData]);
+    switch (calibrationTimeRange) {
+      case '1h': return 'Last 1 Hour';
+      case '24h': return 'Last 24 Hours';
+      case '7d': return 'Last 7 Days';
+      case '30d': return 'Last 30 Days';
+      case 'all': return 'All Time';
+      default: return 'Select Range';
+    }
+  };
+
+  // Function to set quick preset ranges
+  const setQuickPresetRange = (days) => {
+    const end = new Date();
+    const start = subDays(end, days);
+    setStartDate(start);
+    setEndDate(end);
+    setCustomDateRange(true);
+    setShowDatePicker(false);
+  };
 
   if (loading) {
     return (
@@ -1626,6 +1659,150 @@ const AirQualityDashboard = () => {
                   </ResponsiveContainer>
                 </div>
               </div>
+
+              <div className="calibration-controls">
+            <div className="time-range-selector">
+              <h3>⏱️ Select Time Range:</h3>
+
+              <div className="preset-range-buttons">
+                <button
+                  className={`preset-range-btn ${!customDateRange && calibrationTimeRange === '1h' ? 'active' : ''}`}
+                  onClick={() => handlePresetRange('1h')}
+                >
+                  Last 1 Hour
+                </button>
+                <button
+                  className={`preset-range-btn ${!customDateRange && calibrationTimeRange === '24h' ? 'active' : ''}`}
+                  onClick={() => handlePresetRange('24h')}
+                >
+                  Last 24 Hours
+                </button>
+                <button
+                  className={`preset-range-btn ${!customDateRange && calibrationTimeRange === '7d' ? 'active' : ''}`}
+                  onClick={() => handlePresetRange('7d')}
+                >
+                  Last 7 Days
+                </button>
+                <button
+                  className={`preset-range-btn ${!customDateRange && calibrationTimeRange === '30d' ? 'active' : ''}`}
+                  onClick={() => handlePresetRange('30d')}
+                >
+                  Last 30 Days
+                </button>
+                <button
+                  className={`preset-range-btn ${!customDateRange && calibrationTimeRange === 'all' ? 'active' : ''}`}
+                  onClick={() => handlePresetRange('all')}
+                >
+                  All Time
+                </button>
+                <button
+                  className={`preset-range-btn custom ${customDateRange ? 'active' : ''}`}
+                  onClick={handleCustomRange}
+                >
+                  📅 Custom Range
+                </button>
+              </div>
+
+              {/* Quick preset buttons for custom range */}
+              {showDatePicker && (
+                <div className="quick-preset-buttons">
+                  <button className="quick-preset" onClick={() => setQuickPresetRange(1)}>
+                    Yesterday
+                  </button>
+                  <button className="quick-preset" onClick={() => setQuickPresetRange(7)}>
+                    Last Week
+                  </button>
+                  <button className="quick-preset" onClick={() => setQuickPresetRange(30)}>
+                    Last Month
+                  </button>
+                  <button className="quick-preset" onClick={() => {
+                    const today = new Date();
+                    setStartDate(startOfDay(today));
+                    setEndDate(endOfDay(today));
+                  }}>
+                    Today
+                  </button>
+                </div>
+              )}
+
+              {/* Date Range Display */}
+              <div className="selected-range-display">
+                <span className="range-label">Selected Range:</span>
+                <span className="range-value">{getDateRangeText()}</span>
+                {customDateRange && (
+                  <button
+                    className="edit-range-btn"
+                    onClick={() => setShowDatePicker(true)}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+
+              {/* Date Picker Modal */}
+              {showDatePicker && (
+                <div className="date-picker-modal-overlay" onClick={() => setShowDatePicker(false)}>
+                  <div className="date-picker-modal" onClick={e => e.stopPropagation()}>
+                    <div className="modal-header">
+                      <h3>Select Date Range</h3>
+                      <button className="close-modal" onClick={() => setShowDatePicker(false)}>×</button>
+                    </div>
+
+                    <div className="date-picker-container">
+                      <div className="date-picker-column">
+                        <label>Start Date</label>
+                        <DatePicker
+                          selected={startDate}
+                          onChange={(date) => setStartDate(date)}
+                          selectsStart
+                          startDate={startDate}
+                          endDate={endDate}
+                          maxDate={endDate}
+                          inline
+                          calendarClassName="custom-calendar"
+                        />
+                      </div>
+
+                      <div className="date-picker-column">
+                        <label>End Date</label>
+                        <DatePicker
+                          selected={endDate}
+                          onChange={(date) => setEndDate(date)}
+                          selectsEnd
+                          startDate={startDate}
+                          endDate={endDate}
+                          minDate={startDate}
+                          maxDate={new Date()}
+                          inline
+                          calendarClassName="custom-calendar"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="selected-dates-preview">
+                      <div className="date-preview">
+                        <span>From:</span>
+                        <strong>{format(startDate, 'EEEE, MMMM dd, yyyy')}</strong>
+                      </div>
+                      <div className="date-preview">
+                        <span>To:</span>
+                        <strong>{format(endDate, 'EEEE, MMMM dd, yyyy')}</strong>
+                      </div>
+                    </div>
+
+                    <div className="modal-actions">
+                      <button className="cancel-btn" onClick={() => setShowDatePicker(false)}>
+                        Cancel
+                      </button>
+                      <button className="apply-btn" onClick={applyCustomDateRange}>
+                        Apply Date Range
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
               <div className="calibration-data-section">
                 <h3>📋 Calibration Data Table</h3>
